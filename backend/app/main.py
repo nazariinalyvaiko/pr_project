@@ -1,3 +1,9 @@
+import sys
+import asyncio
+
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
 from fastapi import FastAPI # type: ignore
 from fastapi.middleware.cors import CORSMiddleware
 from core import settings
@@ -18,4 +24,4 @@ app.include_router(api_router, prefix=settings.API_V1_STR)
 
 @app.get("/")
 async def root():
-    return {"message": "AliExpress Supplier Search API"}
+    return {"message": "China Suppliers Search API"}

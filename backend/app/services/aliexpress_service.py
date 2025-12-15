@@ -1,166 +1,220 @@
-from playwright.async_api import async_playwright
+from playwright.sync_api import sync_playwright
 from urllib.parse import quote_plus
 from typing import List, Dict
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 
-async def search_aliexpress(product_name, limit=5):
+_executor = ThreadPoolExecutor(max_workers=1)
+
+
+def _search_sync(product_name: str, limit: int = 5) -> List[Dict]:
     base_url = "https://www.made-in-china.com"
-    
     results = []
     
     try:
-        async with async_playwright() as p:
-            browser = await p.firefox.launch(headless=True)
-            page = await browser.new_page(viewport={'width': 1920, 'height': 1080})
-            await page.goto(base_url, wait_until='domcontentloaded', timeout=20000)
+        with sync_playwright() as p:
+            browser = p.firefox.launch(headless=False)
+            page = browser.new_page(viewport={'width': 1920, 'height': 1080})
+            page.goto(base_url, wait_until='domcontentloaded', timeout=20000)
             
-            await page.wait_for_timeout(500)
+            page.wait_for_timeout(1000)
             
-            search_input = await page.query_selector('input.nail-search-input[name="word"]')
-            
+            search_input = page.query_selector('input.nail-search-input[name="word"]')
             if not search_input:
-                search_input = await page.query_selector('input[type="text"][name="word"]')
+                search_input = page.query_selector('input[type="text"][name="word"]')
             
             if search_input:
-                await search_input.fill(product_name)
-                await page.wait_for_timeout(100)
-                await search_input.press('Enter')
+                search_input.fill(product_name)
+                page.wait_for_timeout(300)
+                search_input.press('Enter')
             else:
                 search_url = f"{base_url}/search?word={quote_plus(product_name)}"
-                await page.goto(search_url, wait_until='domcontentloaded', timeout=20000)
+                page.goto(search_url, wait_until='domcontentloaded', timeout=20000)
             
-            await page.wait_for_timeout(500)
+            page.wait_for_timeout(2000)
             
-            supplier_list_links = await page.query_selector_all('a')
-            for link in supplier_list_links:
-                text = await link.inner_text()
-                if text and 'Supplier List' in text.strip():
-                    await link.click()
-                    await page.wait_for_timeout(500)
-                    break
-            
-            await page.wait_for_timeout(500)
-            
-            all_links = await page.query_selector_all('a')
-            items_per_page_link = None
-            for link in all_links:
-                text = await link.inner_text()
-                href = await link.get_attribute('href')
-                if text and text.strip() == '50' and (href == 'javascript:;' or href == 'javascript:void(0);'):
-                    items_per_page_link = link
-                    break
-            
-            if items_per_page_link:
-                class_attr = await items_per_page_link.get_attribute('class')
-                if not class_attr or 'selected' not in class_attr:
-                    await items_per_page_link.click()
-                    await page.wait_for_timeout(500)
-            
-            await page.wait_for_timeout(500)
-            
-            suppliers_list = await page.query_selector('div.search-list')
-            if not suppliers_list:
-                await browser.close()
+            prod_list = page.wait_for_selector('div.prod-list', timeout=30000)
+            if not prod_list:
+                print("No products list found. Waiting 30 seconds before closing...")
+                page.wait_for_timeout(30000)
+                browser.close()
                 return results
             
-            supplier_items = await suppliers_list.query_selector_all('div.list-node')
-            seen_urls = set()
-            all_suppliers = []
+            print("Products list loaded. Setting maximum items per page...")
+            page.wait_for_timeout(2000)
             
-            for item in supplier_items:
+            max_items_links = page.query_selector_all('a[onclick*="savePageNoCookieD"]')
+            max_value = 0
+            max_link = None
+            
+            for link in max_items_links:
+                onclick_attr = link.get_attribute('onclick')
+                if onclick_attr and 'savePageNoCookieD' in onclick_attr:
+                    try:
+                        import re
+                        match = re.search(r'savePageNoCookieD\((\d+)\)', onclick_attr)
+                        if match:
+                            value = int(match.group(1))
+                            if value > max_value:
+                                max_value = value
+                                max_link = link
+                    except:
+                        continue
+            
+            if max_link and max_value > 0:
                 try:
-                    supplier_link = await item.query_selector('a[target="_blank"][href*=".made-in-china.com"]')
-                    if not supplier_link:
-                        supplier_link = await item.query_selector('a[href*=".made-in-china.com"]')
+                    max_link.click()
+                    print(f"Clicked on max items link: {max_value}")
+                    page.wait_for_timeout(2000)
                     
-                    if not supplier_link:
+                    print("Waiting for products to load after selecting max items...")
+                    page.wait_for_selector('div.prod-list', timeout=30000)
+                    page.wait_for_timeout(3000)
+                    
+                    prod_list = page.query_selector('div.prod-list')
+                    if not prod_list:
+                        print("Products list not found after selecting max items")
+                        page.wait_for_timeout(30000)
+                        browser.close()
+                        return results
+                    
+                    print(f"Selected maximum items per page: {max_value}")
+                except Exception as e:
+                    print(f"Could not click max items link or load products: {e}")
+                    import traceback
+                    traceback.print_exc()
+            else:
+                print("Could not find max items selector, continuing with default...")
+            
+            page.wait_for_timeout(2000)
+            
+            prod_list = page.query_selector('div.prod-list')
+            if not prod_list:
+                print("Products list not found. Waiting 30 seconds before closing...")
+                page.wait_for_timeout(30000)
+                browser.close()
+                return results
+            
+            print("Parsing products...")
+            product_items = prod_list.query_selector_all('div.list-node')
+            print(f"Found {len(product_items)} product items in the list")
+            
+            all_products = []
+            seen_suppliers = set()
+            
+            for idx, item in enumerate(product_items):
+                try:
+                    star_container = item.query_selector('.auth-icon-item.icon-star.J-tooltip-ele')
+                    if not star_container:
                         continue
                     
-                    href = await supplier_link.get_attribute('href')
-                    if not href or href in seen_urls:
+                    star_images = star_container.query_selector_all('img')
+                    star_count = len(star_images)
+                    
+                    if star_count == 0:
                         continue
                     
-                    if '.made-in-china.com' not in href or '/product/' in href:
+                    print(f"Product {idx+1}: Found {star_count} stars")
+                    
+                    company_elem = item.query_selector('.company-name-txt')
+                    if not company_elem:
                         continue
                     
-                    seen_urls.add(href)
-                    
-                    supplier_name = await supplier_link.inner_text()
-                    supplier_name = supplier_name.strip()
-                    
-                    if not supplier_name or len(supplier_name) < 2:
+                    company_link = company_elem.query_selector('a')
+                    if not company_link:
                         continue
                     
-                    supplier_url = href.strip()
-                    if supplier_url.startswith('//'):
-                        supplier_url = 'https:' + supplier_url
+                    supplier_name = company_elem.inner_text().strip()
+                    if not supplier_name:
+                        continue
                     
-                    rating = "No rating"
-                    star_count = 0
-                    
-                    rating_elem = await item.query_selector('span.icon-star, span[class*="icon-star"], span[class*="star"]')
-                    if rating_elem:
-                        star_images = await rating_elem.query_selector_all('img[src*="star"]')
-                        star_count = len(star_images)
-                        if star_count > 0:
-                            rating = f"{star_count} out of 5 stars"
-                        else:
-                            rating_text = await rating_elem.inner_text()
-                            if rating_text:
-                                rating = rating_text.strip()
+                    supplier_url = company_link.get_attribute('href')
+                    if supplier_url:
+                        if supplier_url.startswith('//'):
+                            supplier_url = 'https:' + supplier_url
+                        elif not supplier_url.startswith('http'):
+                            supplier_url = base_url + (supplier_url if supplier_url.startswith('/') else '/' + supplier_url)
                     else:
-                        rating_elem = await item.query_selector('div:nth-child(2) > div:nth-child(1) > li:nth-child(1) > span:nth-child(2)')
-                        if rating_elem:
-                            star_images = await rating_elem.query_selector_all('img[src*="star"]')
-                            star_count = len(star_images)
-                            if star_count > 0:
-                                rating = f"{star_count} out of 5 stars"
-                            else:
-                                rating_text = await rating_elem.inner_text()
-                                if rating_text:
-                                    rating = rating_text.strip()
+                        supplier_url = ""
                     
-                    product_link = await item.query_selector('a[href*="/product/"]')
-                    product_name = "Product from " + supplier_name
-                    product_url = supplier_url
+                    supplier_key = supplier_name.lower().strip()
+                    if supplier_key in seen_suppliers:
+                        continue
+                    
+                    product_link = item.query_selector('a[href*="/product/"]')
+                    product_name_text = "Product"
+                    product_url = ""
                     
                     if product_link:
-                        product_name = await product_link.inner_text()
-                        product_href = await product_link.get_attribute('href')
+                        product_name_text = product_link.inner_text().strip()
+                        if not product_name_text:
+                            product_name_text = "Product"
+                        product_href = product_link.get_attribute('href')
                         if product_href:
                             if product_href.startswith('http'):
                                 product_url = product_href
                             else:
                                 product_url = base_url + (product_href if product_href.startswith('/') else '/' + product_href)
                     
-                    price_elem = await item.query_selector('[class*="price"]')
+                    price_elem = item.query_selector('.info.price-info')
                     price = "Price not available"
                     if price_elem:
-                        price = await price_elem.inner_text()
-                        price = price.strip()
+                        price = price_elem.inner_text().strip()
                     
-                    all_suppliers.append({
-                        'product_name': product_name.strip(),
+                    quantity_elem = item.query_selector('.price_hint')
+                    moq = "Not available"
+                    if quantity_elem:
+                        moq = quantity_elem.inner_text().strip()
+                    
+                    all_products.append({
+                        'product_name': product_name_text,
                         'product_url': product_url,
                         'price': price,
-                        'rating': rating,
+                        'detailed_price': price,
+                        'moq': moq,
+                        'rating': f"{star_count} out of 5 stars",
                         'rating_stars': star_count,
                         'store_name': supplier_name,
                         'store_url': supplier_url,
                         'orders': "N/A"
                     })
                     
+                    seen_suppliers.add(supplier_key)
+                    print(f"Added product {idx+1}: {supplier_name} - {star_count} stars")
+                    
                 except Exception as e:
-                    print(f"Error processing supplier: {e}")
+                    print(f"Error processing product {idx+1}: {e}")
+                    import traceback
+                    traceback.print_exc()
                     continue
             
-            all_suppliers.sort(key=lambda x: x['rating_stars'], reverse=True)
-            results = all_suppliers[:limit]
+            print(f"Found {len(all_products)} unique products with ratings")
+            
+            if len(all_products) > 0:
+                print("Products before sorting:")
+                for p in all_products[:10]:
+                    print(f"  - {p['store_name']}: {p['rating_stars']} stars")
+            
+            all_products.sort(key=lambda x: x['rating_stars'], reverse=True)
+            
+            if len(all_products) > 0:
+                print("Products after sorting (top 10):")
+                for p in all_products[:10]:
+                    print(f"  - {p['store_name']}: {p['rating_stars']} stars")
+            
+            results = all_products[:limit]
+            print(f"Selected top {len(results)} suppliers with highest star ratings:")
+            for r in results:
+                print(f"  - {r['store_name']}: {r['rating']}")
             
             for supplier in results:
                 del supplier['rating_stars']
             
-            await browser.close()
+            print("Waiting 10 seconds before closing browser...")
+            page.wait_for_timeout(10000)
+            
+            browser.close()
         
         return results
     except Exception as e:
@@ -168,6 +222,11 @@ async def search_aliexpress(product_name, limit=5):
         import traceback
         traceback.print_exc()
         return []
+
+
+async def search_aliexpress(product_name, limit=5):
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(_executor, _search_sync, product_name, limit)
 
 
 class AliExpressService:

@@ -1,9 +1,12 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
+import type { FormEvent, ChangeEvent } from 'react'
 
 interface Supplier {
   product_name: string
   product_url: string
   price: string
+  detailed_price: string
+  moq: string
   rating: string
   store_name: string
   store_url: string
@@ -17,14 +20,30 @@ interface SearchResponse {
 
 const API_URL = 'http://localhost:8000/api/v1/suppliers'
 
+// Helper function to parse price from string
+const parsePrice = (priceStr: string): number => {
+  if (!priceStr || priceStr.toLowerCase().includes('not available') || priceStr.toLowerCase().includes('n/a')) {
+    return Infinity
+  }
+  // Extract numbers and decimal separators
+  const cleaned = priceStr.replace(/[^\d.,]/g, '').replace(',', '.')
+  const parsed = parseFloat(cleaned)
+  return isNaN(parsed) ? Infinity : parsed
+}
+
+type SortField = 'price' | 'rating' | 'name' | null
+type SortDirection = 'asc' | 'desc'
+
 function App() {
   const [productName, setProductName] = useState('')
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [hasSearched, setHasSearched] = useState(false)
+  const [sortField, setSortField] = useState<SortField>(null)
+  const [sortDirection, setSortDirection] = useState<SortDirection>('asc')
 
-  const handleSearch = async (e: React.FormEvent) => {
+  const handleSearch = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault()
     
     if (!productName.trim()) {
@@ -45,6 +64,8 @@ function App() {
 
       const data: SearchResponse = await response.json()
       setSuppliers(data.suppliers)
+      setSortField(null)
+      setSortDirection('asc')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred')
       setSuppliers([])
@@ -52,6 +73,47 @@ function App() {
       setLoading(false)
     }
   }
+
+  const handleSort = (field: SortField) => {
+    if (sortField === field) {
+      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc')
+    } else {
+      setSortField(field)
+      setSortDirection('asc')
+    }
+  }
+
+  const sortedSuppliers = useMemo(() => {
+    if (!sortField) return suppliers
+
+    return [...suppliers].sort((a, b) => {
+      let aValue: number | string
+      let bValue: number | string
+
+      switch (sortField) {
+        case 'price':
+          aValue = parsePrice(a.price)
+          bValue = parsePrice(b.price)
+          break
+        case 'rating':
+          const aRating = parseInt(a.rating) || 0
+          const bRating = parseInt(b.rating) || 0
+          aValue = aRating
+          bValue = bRating
+          break
+        case 'name':
+          aValue = a.store_name.toLowerCase()
+          bValue = b.store_name.toLowerCase()
+          break
+        default:
+          return 0
+      }
+
+      if (aValue < bValue) return sortDirection === 'asc' ? -1 : 1
+      if (aValue > bValue) return sortDirection === 'asc' ? 1 : -1
+      return 0
+    })
+  }, [suppliers, sortField, sortDirection])
 
   return (
     <div className="min-h-screen bg-white flex flex-col">
@@ -73,7 +135,7 @@ function App() {
               <input
                 type="text"
                 value={productName}
-                onChange={(e) => setProductName(e.target.value)}
+                onChange={(e: ChangeEvent<HTMLInputElement>) => setProductName(e.target.value)}
                 placeholder="Enter product name to search..."
                 className="flex-1 px-6 py-5 text-lg border-0 outline-none bg-transparent text-black placeholder-gray-500 font-medium"
                 disabled={loading}
@@ -137,61 +199,128 @@ function App() {
         )}
 
         {!loading && suppliers.length > 0 && (
-          <div className="mt-16">
-            <div className="space-y-6 max-w-6xl mx-auto">
-              {suppliers.map((supplier, index) => (
-                <div 
-                  key={index} 
-                  className="border-4 border-black bg-white shadow-[8px_8px_0_0_#000] hover:shadow-[12px_12px_0_0_#000] transition-all duration-200"
-                >
-                  <div className="p-8 md:p-10">
-                    <div className="flex flex-col lg:flex-row lg:items-start gap-8">
-                      <div className="flex-shrink-0">
-                        <div className="w-20 h-20 bg-black text-white flex items-center justify-center text-4xl font-bold">
-                          {index + 1}
-                        </div>
-                      </div>
-
-                      <div className="flex-1 min-w-0">
-                        <h3 className="text-2xl md:text-3xl font-bold text-black mb-6 leading-tight">
-                          {supplier.product_name}
-                        </h3>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 mb-6">
-                          <div className="border-2 border-gray-300 p-4 bg-gray-50">
-                            <div className="text-sm font-bold text-gray-600 uppercase tracking-wide mb-2">Store</div>
-                            <a 
-                              href={supplier.store_url} 
-                              target="_blank" 
-                              rel="noopener noreferrer"
-                              className="text-lg font-bold text-black hover:text-purple-600 transition-colors underline"
-                            >
-                              {supplier.store_name}
-                            </a>
-                          </div>
-                          <div className="border-2 border-gray-300 p-4 bg-gray-50">
-                            <div className="text-sm font-bold text-gray-600 uppercase tracking-wide mb-2">Rating</div>
-                            <div className="text-lg font-bold text-black">{supplier.rating}</div>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="flex-shrink-0">
-                        <a 
-                          href={supplier.store_url} 
-                          target="_blank" 
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-3 px-8 py-5 bg-black text-white text-base font-bold hover:bg-gray-800 transition-colors duration-200 uppercase tracking-wide border-4 border-black shadow-[4px_4px_0_0_#000] hover:shadow-[6px_6px_0_0_#000]"
+          <div className="mt-16 space-y-12">
+            {/* Suppliers Table */}
+            <div className="max-w-6xl mx-auto">
+              <h2 className="text-4xl md:text-5xl font-bold text-black mb-8 text-center">
+                Постачальники
+              </h2>
+              <div className="border-4 border-black bg-white shadow-[8px_8px_0_0_#000] overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead className="bg-black text-white">
+                      <tr>
+                        <th className="px-6 py-4 text-left text-sm font-bold uppercase tracking-wide">#</th>
+                        <th 
+                          className="px-6 py-4 text-left text-sm font-bold uppercase tracking-wide cursor-pointer hover:bg-gray-800 transition-colors"
+                          onClick={() => handleSort('name')}
                         >
-                          View Store
-                          <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M17.25 8.25L21 12m0 0l-3.75 3.75M21 12H3" />
-                          </svg>
-                        </a>
-                      </div>
-                    </div>
-                  </div>
+                          <div className="flex items-center gap-2">
+                            Постачальник
+                            {sortField === 'name' && (
+                              <span className="text-xs">{sortDirection === 'asc' ? '↑' : '↓'}</span>
+                            )}
+                          </div>
+                        </th>
+                        <th className="px-6 py-4 text-left text-sm font-bold uppercase tracking-wide">Товар</th>
+                        <th 
+                          className="px-6 py-4 text-center text-sm font-bold uppercase tracking-wide cursor-pointer hover:bg-gray-800 transition-colors"
+                          onClick={() => handleSort('price')}
+                        >
+                          <div className="flex items-center justify-center gap-2">
+                            Ціна
+                            {sortField === 'price' && (
+                              <span className="text-xs">{sortDirection === 'asc' ? '↑' : '↓'}</span>
+                            )}
+                          </div>
+                        </th>
+                        <th className="px-6 py-4 text-center text-sm font-bold uppercase tracking-wide">MOQ</th>
+                        <th 
+                          className="px-6 py-4 text-center text-sm font-bold uppercase tracking-wide cursor-pointer hover:bg-gray-800 transition-colors"
+                          onClick={() => handleSort('rating')}
+                        >
+                          <div className="flex items-center justify-center gap-2">
+                            Рейтинг
+                            {sortField === 'rating' && (
+                              <span className="text-xs">{sortDirection === 'asc' ? '↑' : '↓'}</span>
+                            )}
+                          </div>
+                        </th>
+                        <th className="px-6 py-4 text-center text-sm font-bold uppercase tracking-wide">Дія</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sortedSuppliers.map((supplier: Supplier, index: number) => {
+                        const priceValue = parsePrice(supplier.price);
+                        const allPrices = sortedSuppliers.map((s: Supplier) => parsePrice(s.price)).filter((p: number) => p !== Infinity);
+                        const minPrice = allPrices.length > 0 ? Math.min(...allPrices) : Infinity;
+                        const isBestPrice = priceValue !== Infinity && priceValue === minPrice;
+                        
+                        return (
+                          <tr 
+                            key={index}
+                            className={`border-b-2 border-gray-300 hover:bg-gray-50 transition-colors ${
+                              isBestPrice ? 'bg-green-50 border-green-400' : ''
+                            }`}
+                          >
+                            <td className="px-6 py-4">
+                              <div className="w-12 h-12 bg-black text-white flex items-center justify-center text-xl font-bold">
+                                {index + 1}
+                              </div>
+                            </td>
+                            <td className="px-6 py-4">
+                              <a 
+                                href={supplier.store_url} 
+                                target="_blank" 
+                                rel="noopener noreferrer"
+                                className="text-lg font-bold text-black hover:text-purple-600 transition-colors underline"
+                              >
+                                {supplier.store_name}
+                              </a>
+                            </td>
+                            <td className="px-6 py-4">
+                              <div className="text-base font-semibold text-gray-800">{supplier.product_name}</div>
+                            </td>
+                            <td className="px-6 py-4 text-center">
+                              <div className="flex flex-col items-center gap-1">
+                                <span className={`text-2xl font-bold ${isBestPrice ? 'text-green-600' : 'text-black'}`}>
+                                  {supplier.detailed_price !== 'Not available' ? supplier.detailed_price : supplier.price}
+                                </span>
+                                {isBestPrice && (
+                                  <span className="text-xs font-bold text-green-600 uppercase bg-green-100 px-2 py-1 rounded">
+                                    Найкраща ціна
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                            <td className="px-6 py-4 text-center">
+                              <div className="text-base font-semibold text-gray-700">
+                                {supplier.moq !== 'Not available' ? supplier.moq : '-'}
+                              </div>
+                            </td>
+                            <td className="px-6 py-4 text-center">
+                              <div className="text-lg font-bold text-black">{supplier.rating}</div>
+                            </td>
+                            <td className="px-6 py-4 text-center">
+                              <a 
+                                href={supplier.product_url || supplier.store_url} 
+                                target="_blank" 
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-2 px-4 py-2 bg-black text-white text-sm font-bold hover:bg-gray-800 transition-colors duration-200 uppercase tracking-wide border-2 border-black"
+                              >
+                                Переглянути
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.25 8.25L21 12m0 0l-3.75 3.75M21 12H3" />
+                                </svg>
+                              </a>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
                 </div>
-              ))}
+              </div>
             </div>
           </div>
         )}

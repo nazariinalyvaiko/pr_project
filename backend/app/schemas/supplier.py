@@ -5,6 +5,8 @@ class SupplierResponse(BaseModel):
     product_name: str
     product_url: str
     price: str
+    detailed_price: str
+    moq: str
     rating: str
     store_name: str
     store_url: str
